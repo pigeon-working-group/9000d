@@ -1,29 +1,34 @@
 #[macro_use]
 extern crate serde_derive;
 
-extern crate serde;
+#[macro_use] 
+extern crate validator_derive;
+extern crate validator;
+
 extern crate serde_json;
 
 extern crate rppal;
 
-use serde_json::value::Value;
+extern crate bufstream;
 
 use rppal::gpio::{Level, Mode, PullUpDown, GPIO};
 use rppal::gpio::Error as GPIOError;
 
+use validator::{Validate};
+
+use bufstream::BufStream;
+
 use std::thread::sleep;
 use std::time::Duration;
-use std::io::{BufRead, BufReader};
-use std::net::TcpListener;
-use std::thread;
-use std::sync::mpsc::{channel, Receiver};
+use std::io::BufRead;
+use std::net::{TcpListener};
+use std::thread::spawn;
+use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::error::Error;
+use std::net::Shutdown;
 
-const BUTTON: u8 = 4;
 const RELAY: u8 = 18;
 
-const LED_GREEN: u8 = 5;
-const LED_RED: u8 = 6;
 
 pub struct Button {
 	pin: u8,
@@ -70,194 +75,167 @@ impl Button {
 				Err(err) => return Err(err),
 			}
 		}
-		Ok(())
 	}
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-struct Message {
-	cmd_type: String,
-	// TODO: Find proper solution to convert HashMap to string
-	payload: Value
+fn generate_pigeon_state(ratio_state: PigeonStateRatio) -> PigeonState {
+	let release_ratio = 1.0 - (ratio_state.operating_ratio);
+
+	PigeonState {
+		power: ratio_state.power,
+		operating_time: 
+			(ratio_state.operating_ratio * ratio_state.cycle_time) as u64,
+
+		release_time: (release_ratio * ratio_state.cycle_time) as u64
+	}
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-struct PowerCommand {
-	power: bool
+#[derive(Serialize, Deserialize, Validate, Debug, Clone, Copy)]
+struct PigeonStateRatio {
+	power: bool,
+	#[validate(range(min = "25", max = "1000"))]
+	cycle_time: f32,
+	#[validate(range(min = "0.0", max = "1.0"))]
+	operating_ratio: f32,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug)]
 struct PigeonState {
+	power: bool,
 	operating_time: u64,
-	release_time: u64
+	release_time: u64,
 }
+
 
 struct Pigeon {
 	gpio: GPIO,
-	power_cmd_rx: Receiver<PowerCommand>,
-	pigeon_state_rx: Receiver<PigeonState>,
-	state: PigeonState,
+	state_rx: Receiver<PigeonState>,
 	components: PigeonComponents
 }
 
 struct PigeonComponents {
-	relay: u8,
-	status_running: u8,
-	status_stopped: u8
+	relay: u8
 }
 
 impl Pigeon {
 	fn new(
 		components: PigeonComponents,
-		power_cmd_rx: Receiver<PowerCommand>,
-		pigeon_state_rx: Receiver<PigeonState>,
+		state_rx: Receiver<PigeonState>,
 	) -> Result<Pigeon, GPIOError> {
 		let mut gpio = try!(GPIO::new());
 
 		// GPIO setup
 		gpio.set_mode(components.relay, Mode::Output);
-		gpio.set_mode(components.status_running, Mode::Output);
-		gpio.set_mode(components.status_stopped, Mode::Output);
-
 		gpio.write(components.relay, Level::Low);
-		gpio.write(components.status_running, Level::Low);
-		gpio.write(components.status_stopped, Level::High);
+
 
 
 		Ok(Pigeon {
 			gpio: gpio,
-			power_cmd_rx: power_cmd_rx,
-			pigeon_state_rx: pigeon_state_rx,
-			state: PigeonState {
-				operating_time: 20,
-				release_time: 15,
-			},
+			state_rx: state_rx,
 			components: components,
 		})
 	}
 
 	fn start(&mut self) -> Box<Error> {
+		let mut pigeon_state: PigeonState;
+
 		loop {
-			match self.power_cmd_rx.recv() {
-				Ok(power_cmd) => if power_cmd.power {
-					loop {
-						match self.pigeon_state_rx.try_recv() {
-							Ok(pigeon_state) => {
-								self.state = pigeon_state;
-							},
-							// TODO: Differentiate between Empty & Disconnected
-							Err(_) => {}
-						}
-						match self.power_cmd_rx.try_recv() {
-							// TODO: More elegant solution
-							Ok(power_cmd) => {
-								if !power_cmd.power {
-									break
+			match self.state_rx.recv() {
+				Ok(state) =>  {
+					pigeon_state = state;
+
+					println!("{:?}", pigeon_state);
+
+					if pigeon_state.power {
+						loop {
+							match self.state_rx.try_recv() {
+								Ok(state) => {
+									pigeon_state = state;
+
+									println!("{:?}", pigeon_state);
+
+									if !pigeon_state.power {
+										break;
+									}
+								},
+								Err(err) => {
+									if err != TryRecvError::Empty {
+										return Box::new(err);
+									}
 								}
 							}
-							// TODO: Differentiate between Empty & Disconnected
-							Err(_) => {}
+
+							self.gpio.write(self.components.relay, Level::High);
+							sleep(Duration::from_millis(pigeon_state.operating_time));
+							self.gpio.write(self.components.relay, Level::Low);
+							sleep(Duration::from_millis(pigeon_state.release_time));
 						}
-						self.gpio.write(self.components.relay, Level::High);
-						sleep(Duration::from_millis(self.state.operating_time));
-						self.gpio.write(self.components.relay, Level::Low);
-						sleep(Duration::from_millis(self.state.release_time));
 					}
 				},
-				Err(err) => return Box::new(err),
+				Err(err) => return Box::new(err)
 			}
 		}
 	}
 }
 
-fn main() {
-	let (power_cmd_tx, power_cmd_rx) = channel();
-	let (pigeon_state_tx, pigeon_state_rx) = channel();
 
+fn main() {
+	let (state_tx, state_rx) = channel();
 
 	let mut pigeon = Pigeon::new(
 		PigeonComponents {
-			relay: RELAY,
-			status_running: LED_GREEN,
-			status_stopped: LED_RED,
+			relay: RELAY
 		},
-		power_cmd_rx,
-		pigeon_state_rx,
+		state_rx,
 	).unwrap();
 
-
-	thread::spawn(move || { pigeon.start(); });
-
-	let mut button = Button::new(BUTTON).unwrap();
-	let power_cmd_tx_clone = power_cmd_tx.clone();
-
-
-	thread::spawn(move || { 
-		let mut power = false;
-
-		button.poll(|| {
-			let power_cmd_tx = &power_cmd_tx_clone;
-
-			power = !power;
-
-			println!("{:?}", power);
-
-
-			// TODO: Use result
-			power_cmd_tx.send(PowerCommand {power: power}).ok();
-
-		})
-	});	
-
+	
+	spawn(move || { pigeon.start(); });
 
 	match TcpListener::bind("pigeon.local:1630") {
 		Ok(listener) => for stream in listener.incoming() {
-			let power_cmd_tx_clone = power_cmd_tx.clone();
-			let pigeon_state_tx_clone = pigeon_state_tx.clone();
+			let state_tx_clone = state_tx.clone();
 
-			thread::spawn(move || {
-				let mut stream = BufReader::new(stream.unwrap());
+			let mut buf = BufStream::new(stream.unwrap());
+
+
+			spawn(move || {
 				let mut raw_message: String;
 
-				let power_cmd_tx = power_cmd_tx_clone;
-				let pigeon_state_tx = pigeon_state_tx_clone;
+				let state_tx = state_tx_clone;
 
 				loop {
+					//let buffers = buffers_clone.clone().lock().unwrap();
+
 					raw_message = "".to_owned();
 
-					stream.read_line(&mut raw_message).ok();
+					if buf.read_line(&mut raw_message).is_ok() {
+						match serde_json::from_str::<PigeonStateRatio>(&raw_message) {
+							Ok(state) => {
+								if let Err(err) = state_tx.send(generate_pigeon_state(state)) {
+									// If messaging dies, there is something seriously wrong
+									panic!("Could not send message '{:?}'", err)
+								}
+							},
+							Err(err) =>  {
+								if err.is_eof() {
 
+									buf.get_ref().shutdown(Shutdown::Both).ok();
 
-					match serde_json::from_str::<Message>(&raw_message) {
-						Ok(message) => match message.cmd_type.as_ref() {
-							"power" => {
-								// TODO: Better solution
-								let payload = message.payload.to_string();
-
-								println!("{:?}", payload);
-
-								// TODO: Input validation
-								power_cmd_tx.send(
-									serde_json::from_str::<PowerCommand>(&payload).unwrap(),
-								).ok();
+									return;
+								} else {
+									println!("{:?}", err);
+								}
 							}
-							"pigeon_state" => {
-								// TODO: Better solution
-								let payload = message.payload.to_string();
-
-								// TODO: Input validation
-								pigeon_state_tx.send(
-									serde_json::from_str::<PigeonState>(&payload).unwrap(),
-								).ok();
-							}
-							_ => println!("Unrecognized command type: '{:?}'", message.cmd_type),
-						},
-						// TODO: Don't panic on invalid input
-						Err(err) => panic!("{:?}", err),
+						}						
+					} else {
+						// Better error handling
+						return;
 					}
 				}
 			});
 		},
-		Err(err) => println!("{:?}", err),
+		Err(err) => panic!("{:?}", err)
 	}
 }
