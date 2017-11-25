@@ -1,6 +1,8 @@
 VM_ADDRESS    ?= localhost
 CONFIGURATION ?= debug
-COLOR ?= always
+
+TARGET ?= armv7
+
 
 ifeq ($(CONFIGURATION), release)
 	OPTIMIZATION = --release
@@ -9,6 +11,10 @@ endif
 all: build transfer
 
 build: src/main.rs
+ifeq ($(TARGET), arm)
+	./util/setup-armv6.sh
+endif
+	
 	@if test -z "$(VM_USER)"; then \
 	echo "VM_USER is not set, consult README.md"; exit 1; fi
 
@@ -22,8 +28,9 @@ build: src/main.rs
 	ssh $(VM_USER)@$(VM_ADDRESS) -p $(VM_PORT) \
 		'source ~/.profile && \
 		cd $(VM_PROJECT_LOCATION) && \
-		cargo build --target=armv7-unknown-linux-gnueabihf --color $(COLOR) $(OPTIMIZATION)'
+		cargo build --target=$(TARGET)-unknown-linux-gnueabihf $(OPTIMIZATION)'
 
+.PHONY: transfer
 transfer:
 	@if test -z "$(TARGET_USER)"; then \
 	echo "TARGET_USER is not set, consult README.md"; exit 1; fi
@@ -34,4 +41,4 @@ transfer:
 	@if test -z "$(TARGET_BIN_LOCATION)"; then \
 	echo "TARGET_BIN_LOCATION is not set, consult README.md"; exit 1; fi	
 
-	scp target/armv7-unknown-linux-gnueabihf/$(CONFIGURATION)/pigeond $(TARGET_USER)@$(TARGET_ADDRESS):$(TARGET_BIN_LOCATION)
+	scp target/$(TARGET)-unknown-linux-gnueabihf/$(CONFIGURATION)/9000d $(TARGET_USER)@$(TARGET_ADDRESS):$(TARGET_BIN_LOCATION)
