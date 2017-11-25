@@ -3,6 +3,9 @@
 VirtualBox is the preferred virtualizer, although any other virtualizer that can provided shared folders and port forwarding will also work. 
 Docker might be considered as a replacement in the future.
 
+[Debian 9 Stretch](https://wiki.debian.org/DebianStretch) is the distro of choice. 
+
+
 **Prerequsites:**
 * Insert Guest Additions CD image
 
@@ -16,9 +19,12 @@ chmod +x rustup.sh
 ./rustup.sh -y
 rm rustup.sh
 
+# For ARMv7 support
+rustup target add armv7-unknown-linux-gnueabihf
 
 # Add Raspberry Pi 3 arch
 sudo dpkg --add-architecture armhf
+sudo apt-get update
 
 # Cross-compile dependencies
 sudo apt-get install -y build-essential crossbuild-essential-armhf
@@ -37,9 +43,6 @@ sudo ./VBoxLinuxAdditions.run
 # Allow current user to access shared folders
 sudo adduser "$USER" vboxsf
 
-# Allow ssh user environments
-sudo sh -c 'echo "PermitUserEnvironment yes" >> /etc/ssh/sshd_config'
-
 # Reboot
 sudo reboot
 ```
@@ -47,7 +50,7 @@ sudo reboot
 **SSH keys** are **recommended**.
 
 ## Cross-compiling
-The included Makefile cross-compiles the project on the Linux VM and transfers it onto a target system (ARMv7 hard-float based). 
+The included Makefile cross-compiles the project on the Linux VM and transfers it onto a target system (ARMv6/ARMv7 hard-float based). 
 Environment variables are used for configuration.
 
 ### Environment Variables
@@ -56,7 +59,7 @@ Environment variables are used for configuration.
 	Example: `pigeon.local`
 * `TARGET_BIN_LOCATION`  
 	Target location of the deployed binary.  
-	Example: `~`
+	Example: `'~'`
 * `TARGET_USER`  
 	Username on target system.  
 	Example: `philip`
@@ -65,11 +68,16 @@ Environment variables are used for configuration.
 	Example: `2222`
 * `VM_PROJECT_LOCATION`  
 	Shared project folder location.  
-	Example: `/media/sf_pigeond`
+	Example: `/media/sf_9000d`
 * `VM_USER`  
 	Username on cross-compile VM.  
 	Example: `philip`
 * `CONFIGURATION`  
 	Defaults to `debug`, set to `release` for optimized builds.  
 	Example: `release`
+* `TARGET`  
+	Defaults to `armv7`, set to `arm` for ARMv6 builds.  
+	Example: `arm`
+
+Run `python3 util/generate_env.sh` to generate a `.env` file containing these variables. Use something like [autoenv](https://github.com/kennethreitz/autoenv) to automatically run this file.
 
