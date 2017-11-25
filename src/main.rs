@@ -11,7 +11,7 @@ extern crate rppal;
 
 extern crate bufstream;
 
-use rppal::gpio::{Level, Mode, PullUpDown, GPIO};
+use rppal::gpio::{Level, Mode, GPIO};
 use rppal::gpio::Error as GPIOError;
 
 use validator::{Validate};
@@ -29,54 +29,6 @@ use std::net::Shutdown;
 
 const RELAY: u8 = 18;
 
-
-pub struct Button {
-	pin: u8,
-	gpio: GPIO
-}
-
-impl Button {
-	pub fn new(pin: u8) -> Result<Button, GPIOError> {
-		match GPIO::new() {
-			Ok(mut gpio) => {
-				gpio.set_mode(pin, Mode::Input);
-				gpio.set_pullupdown(pin, PullUpDown::PullDown);
-
-				Ok(Button {
-					pin: pin,
-					gpio: gpio
-				})
-			}
-			Err(e) => Err(e),
-		}
-	}
-
-
-	pub fn poll<F>(&mut self, mut closure: F) -> Result<(), GPIOError>
-	where
-		F: FnMut(),
-	{
-		let mut button_state = match self.gpio.read(self.pin) {
-			Ok(res) => res,
-			Err(err) => return Err(err),
-		};
-
-		loop {
-			match self.gpio.read(self.pin) {
-				Ok(bs) => {
-					if bs != button_state && bs == Level::High {
-						closure();
-					}
-
-					button_state = bs;
-
-					sleep(Duration::from_millis(50));
-				}
-				Err(err) => return Err(err),
-			}
-		}
-	}
-}
 
 fn generate_pigeon_state(ratio_state: PigeonStateRatio) -> PigeonState {
 	let release_ratio = 1.0 - (ratio_state.operating_ratio);
@@ -193,7 +145,7 @@ fn main() {
 	
 	spawn(move || { pigeon.start(); });
 
-	match TcpListener::bind("pigeon.local:1630") {
+	match TcpListener::bind("0.0.0.0:1630") {
 		Ok(listener) => for stream in listener.incoming() {
 			let state_tx_clone = state_tx.clone();
 
