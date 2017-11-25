@@ -4,3 +4,5 @@
 *.sublime-*
 testing*
 src/dump.rs
+.env
+.cargo/armv6-toolchain
